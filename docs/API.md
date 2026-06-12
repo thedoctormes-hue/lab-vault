@@ -1,0 +1,425 @@
+# Lab Vault HTTP API
+
+> Версия: 3.0.0 | Базовый URL: `http://127.0.0.1:8301` | Обновлено: 2026-06-12
+
+## Аутентификация
+
+Два типа доступа:
+
+**Админ:** Header `X-Vault-Token: <admin-token>`
+- Полный доступ к управлению секретами
+
+**Токен доступа:** URL path `GET /access/:token`
+- One-time токен для получения конкретного секрета
+- Rate limited: 10 req/min на IP
+
+## Эндпоинты
+
+### Health Check
+
+```
+GET /health
+```
+
+**Авторизация:** не требуется.
+
+**Ответ:**
+```json
+{
+  "status": "ok",
+  "secrets": 5,
+  "uptime": "2h15m30s"
+}
+```
+
+**Коды:**
+- 200 — сервис работает
+
+---
+
+### Список секретов
+
+```
+GET /secrets
+```
+
+**Авторизация:** Admin (X-Vault-Token header).
+
+**Ответ:**
+```json
+[
+  {
+    "name": "smtp_password",
+    "value": "secret123",
+    "updated_at": "2026-06-10T12:30:00Z"
+  }
+]
+```
+
+**Коды:**
+- 200 — успешно
+- 401 — не авторизован (отсутствует/неверный токен)
+
+---
+
+### Создать/обновить секрет
+
+```
+POST /secrets
+Content-Type: application/json
+X-Vault-Token: <admin-token>
+```
+
+**Тело запроса:**
+```json
+{
+  "name": "smtp_password",
+  "value": "secret123"
+}
+```
+
+**Ответ:**
+```json
+{
+  "status": "created",
+  "name": "smtp_password"
+}
+```
+
+**Коды:**
+- 200 — успешно создано/обновлено
+- 400 — отсутствует name или value
+- 403 — запрещено (пустой admin token)
+- 401 — не авторизован
+
+---
+
+### Удалить все секреты (killswitch)
+
+```
+DELETE /secrets
+X-Vault-Token: <admin-token>
+```
+
+**Ответ:**
+```json
+{
+  "status": "deleted"
+}
+```
+
+**Коды:**
+- 200 — все секреты удалены
+- 403 — запрещено
+
+**Внимание:** Необратимая операция. В боте требуется подтверждение.
+
+---
+
+### Экспорт секретов
+
+```
+GET /export
+X-Vault-Token: <admin-token>
+```
+
+**Заголовки ответа:**
+```
+Content-Type: application/json
+Content-Disposition: attachment; filename="vault-export.json"
+```
+
+**Ответ:**
+```json
+{
+  "smtp_password": "secret123",
+  "api_key": "abc123"
+}
+```
+
+**Коды:**
+- 200 — успешно
+- 401 — не авторизован
+
+---
+
+### Доступ по токену
+
+```
+GET /access/:token
+```
+
+**Авторизация:** Токен в URL path.
+
+**Ответ:**
+```json
+{
+  "name": "smtp_password",
+  "value": "secret123",
+  "updated_at": "2026-06-10T12:30:00Z"
+}
+```
+
+**Коды:**
+- 200 — секрет найден
+- 400 — токен не указан
+- 403 — токен неверный, отозван или истёк
+- 404 — секрет не найден
+
+**Проверки токена:**
+1. Токен существует в `config.SecretTokens`
+2. `Revoked == false`
+3. `ExpiresAt` не истекло (если задано)
+4. Rate limit: 10 req/min на IP
+
+**One-time:** Токен автоматически отзывается после первого успешного использования.
+
+## Проекты
+
+### Получить все проекты
+
+```
+GET /projects
+X-Vault-Token: <admin-token>
+```
+
+**Ответ:**
+```json
+[
+  {
+    "id": "myapp",
+    "name": "My App",
+    "secret_ids": ["db_pass", "api_key"],
+    "created_at": "2026-06-12T10:00:00Z"
+  }
+]
+```
+
+**Коды:** 200, 401
+
+---
+
+### Создать проект
+
+```
+POST /projects
+Content-Type: application/json
+X-Vault-Token: <admin-token>
+```
+
+**Тело:**
+```json
+{"id": "myapp", "name": "My App"}
+```
+
+**Ответ:**
+```json
+{"status": "created", "id": "myapp", "name": "My App"}
+```
+
+**Коды:** 200, 400, 409 (уже существует), 401
+
+---
+
+### Получить проект
+
+```
+GET /project/:id
+X-Vault-Token: <admin-token>
+```
+
+**Ответ:**
+```json
+{
+  "id": "myapp",
+  "name": "My App",
+  "secret_ids": ["db_pass", "api_key"],
+  "secrets": [
+    {"name": "db_pass", "updated_at": "2026-06-10T12:30:00Z"},
+    {"name": "api_key", "updated_at": "2026-06-11T08:15:00Z"}
+  ],
+  "created_at": "2026-06-12T10:00:00Z"
+}
+```
+
+**Коды:** 200, 404
+
+---
+
+### Удалить проект
+
+```
+DELETE /project/:id
+X-Vault-Token: <admin-token>
+```
+
+Удаляет проект и все его токены.
+
+**Коды:** 200, 404
+
+---
+
+### Список токенов проекта
+
+```
+GET /project-tokens/:project_id
+X-Vault-Token: <admin-token>
+```
+
+**Ответ:** массив `ProjectToken` объектов.
+
+---
+
+### Создать токен проекта
+
+```
+POST /project-tokens/:project_id
+X-Vault-Token: <admin-token>
+```
+
+**Ответ:**
+```json
+{
+  "token": "abc123...xyz",
+  "project_id": "myapp",
+  "expires_at": "2026-07-12T10:00:00Z"
+}
+```
+
+**Коды:** 200, 404
+
+Оригинал токена показывается только один раз. В config.yaml сохраняется SHA-256 хеш.
+
+---
+
+### Доступ по project token
+
+```
+GET /access/:token
+```
+
+**Ответ (project token):**
+```json
+{
+  "project": "My App",
+  "project_id": "myapp",
+  "secrets": {
+    "db_pass": {"name": "db_pass", "value": "secret123", "updated_at": "2026-06-10T12:30:00Z"},
+    "api_key": {"name": "api_key", "value": "key456", "updated_at": "2026-06-11T08:15:00Z"}
+  }
+}
+```
+
+**Коды:** 200, 403, 404
+
+Project token — одноразовый, отзывается после первого использования.
+
+---
+
+## Токены доступа
+
+### Создание токена (через бот)
+
+При создании секрета через TG-бот токен генерируется автоматически.
+Вручную — через кнопку "🔑 Создать токен" в карточке секрета.
+
+### Структура токена
+
+```go
+type SecretToken struct {
+    SecretName string    // Имя секрета
+    Token      string    // SHA-256 hex-хеш (64 hex-символа)
+    CreatedAt  time.Time // Дата создания
+    ExpiresAt  time.Time // Дата истечения (zero = бессрочно)
+    Revoked    bool      // Отозван
+}
+```
+
+### Генерация токена
+
+```go
+token, _ := randomToken(32)     // crypto/rand, 32 символа
+hash := hashToken(token)         // SHA-256 → 64 hex-символа
+```
+
+В config.yaml хранится **хеш** токена, не оригинал. Оригинал показывается только один раз при создании.
+
+### TTL
+
+По умолчанию: 720 часов (30 дней). Настраивается через `token_ttl_hours` в config.yaml.
+
+### Отзыв токенов
+
+- Через бот: "🚫 Отозвать все токены" в карточке секрета
+- Через бот: "🚫 Удалить токены" в главном меню (все токены)
+- Автоматически: при удалении секрета, при использовании (one-time)
+
+## Примеры использования
+
+### curl
+
+```bash
+# Health check
+curl http://127.0.0.1:8301/health
+
+# Создать секрет
+curl -X POST http://127.0.0.1:8301/secrets \
+  -H "X-Vault-Token: <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"api_key","value":"secret456"}'
+
+# Получить по токену
+curl http://127.0.0.1:8301/access/<token>
+
+# Экспорт
+curl http://127.0.0.1:8301/export \
+  -H "X-Vault-Token: <admin-token>"
+
+# Killswitch
+curl -X DELETE http://127.0.0.1:8301/secrets \
+  -H "X-Vault-Token: <admin-token>"
+```
+
+### lab-vault-env
+
+```bash
+# Получить секрет в env (single secret)
+eval $(lab-vault-env -token <token>)
+
+# Получить все секреты проекта в env (project token)
+eval $(lab-vault-env -token <project-token>)
+
+# Записать секреты проекта в .env файл
+lab-vault-env -token <project-token> --write-to /path/to/.env
+
+# Raw JSON output
+lab-vault-env -token <token> --raw
+
+# Custom vault address
+lab-vault-env -addr http://127.0.0.1:8301 -token <token>
+```
+
+### lab-vault-cli
+
+```bash
+# Health check
+lab-vault-cli health
+
+# Список секретов
+lab-vault-cli list
+
+# Получить секрет
+lab-vault-cli get api_key
+
+# Создать/обновить секрет
+lab-vault-cli set api_key secret123
+
+# Удалить секрет
+lab-vault-cli delete api_key
+
+# Экспорт
+lab-vault-cli export
+
+# Killswitch
+lab-vault-cli wipe
+```

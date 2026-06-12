@@ -1,0 +1,45 @@
+# === Binary build outputs ===
+/lab-vault
+/lab-vault-env
+/lab-vault-cli
+*.exe
+*.bin
+*.bak
+
+# === Go ===
+vendor/
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Test artifacts ===
+*.test
+coverage.out
+coverage.html
+
+# === Secrets and local config ===
+config.yaml
+config.local.yaml
+*.local.yaml
+.env
+.env.*
+!.env.example
+
+# === Binary artifacts ===
+lab-vault.bak
+lab-vault.bin
+
+# === Snapshot (encrypted secrets) ===
+snapshot.enc
+
+# === Temp files ===
+.tmp
+*.tmp
+*~
