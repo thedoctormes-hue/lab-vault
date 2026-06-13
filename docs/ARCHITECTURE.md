@@ -1,6 +1,6 @@
 # Архитектура Lab Vault
 
-> Версия: 3.0.0 | Дата: 2026-06-12 | Владелец: ant | last_reviewed: 2026-06-12 | last_code_change: 2026-06-12
+> Версия: 4.0.0 | Дата: 2026-06-14 | Владелец: ant | last_reviewed: 2026-06-14 | last_code_change: 2026-06-14
 
 ## Обзор
 
@@ -15,14 +15,23 @@ Lab Vault — **in-memory секретный менеджер** с Telegram-бо
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
 │  │   Bot (TG)   │───▶│    Store     │◀───│Server (HTTP) │   │
 │  │   FSM multi  │    │  sync.RWMutex│    │  net/http    │   │
-│  │   HTML render│    │  sealedKey   │    │ 10 endpoints │   │
+│  │   HTML render│    │  sealedKey   │    │ 13 endpoints │   │
+│  │              │    │  audit       │    │              │   │
 │  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘   │
 │         │                   │                   │            │
 │  ┌──────▼───────┐    ┌──────▼───────┐    ┌──────▼───────┐   │
 │  │   Config     │    │  SecretToken │    │  snapshot.enc │   │
 │  │   YAML + mu  │    │  Project     │    │  JSON/blob   │   │
 │  │  +projects   │    │  ProjectToken│    │              │   │
-│  └──────────────┘    └──────────────┘    └──────────────┘   │
+│  │  +AuditLog   │    └──────────────┘    └──────────────┘   │
+│  │  +cleanupStop│                                            │
+│  └──────────────┘    ┌──────────────┐                       │
+│                      │ AuditLogger  │  ring buffer (1000)   │
+│                      │  + mutex     │                       │
+│                      └──────────────┘                       │
+│  ┌──────────────┐                                            │
+│  │ CleanupWorker│  background goroutine (1h interval)       │
+│  └──────────────┘                                            │
 └─────────────────────────────────────────────────────────────┘
 
 Внешние клиенты:
@@ -46,8 +55,11 @@ type Store struct {
     mu        sync.RWMutex
     secrets   map[string]*Secret
     sealedKey []byte // nil = legacy, non-nil = sealed mode
+    audit     *AuditLogger // nil = audit disabled
 }
 ```
+
+**Создание:** `NewStore(password string, audit ...*AuditLogger)` — variadic для обратной совместимости.
 
 **Режимы работы:**
 - **Sealed** (`VAULT_PASSWORD` задан): значения шифруются ChaCha20-Poly1305 перед записью в map, расшифровываются при чтении
@@ -76,7 +88,7 @@ type Store struct {
 
 **Ответственность:** REST API для управления секретами.
 
-**Эндпоинты:**
+**Эндпоинты (13):**
 
 | Метод | Путь | Авторизация | Описание |
 |-------|------|-------------|----------|
@@ -87,18 +99,24 @@ type Store struct {
 | GET | `/export` | Admin | Экспорт JSON |
 | GET | `/access/:token` | Token | Доступ по токену (single or project) |
 | GET | `/secret/:name` | Admin | Чтение секрета по имени |
+| DELETE | `/secret/:name` | Admin | Удалить секрет + токены |
 | GET | `/projects` | Admin | Список проектов |
 | POST | `/projects` | Admin | Создать проект |
 | GET | `/project/:id` | Admin | Получить проект |
 | DELETE | `/project/:id` | Admin | Удалить проект |
 | GET | `/project-tokens/:project_id` | Admin | Токены проекта |
 | POST | `/project-tokens/:project_id` | Admin | Создать токен проекта |
+| GET | `/audit` | Admin | Аудит-лог (ring buffer) |
+| DELETE | `/token/<hash>` | Admin | Отзыв токена по хешу |
+| PUT | `/token/<hash>` | Admin | Ротация токена |
 
 **Аутентификация:**
 - Админ: `X-Vault-Token` header + `ConstantTimeCompare`
 - Агент: токен из URL path, проверка в `config.SecretTokens`
 
 **Таймауты:** ReadTimeout=5s, WriteTimeout=10s
+
+**Graceful shutdown:** при получении SIGTERM/SIGINT — остановка cleanup worker, сохранение снапшота, завершение HTTP-сервера с 10-секундным таймаутом. Ошибка `ListenAndServe` логируется и вызывает `cancel()` контекста.
 
 ### 3. Bot (Telegram)
 
@@ -167,6 +185,8 @@ type Config struct {
     UseTLS         bool                      `yaml:"use_tls"`
     TLSCertPath    string                    `yaml:"tls_cert_path"`
     TLSKeyPath     string                    `yaml:"tls_key_path"`
+    AuditLog       *AuditLogger              `yaml:"-"`
+    cleanupStop    chan struct{}             `yaml:"-"`
     mu             sync.RWMutex              `yaml:"-"`
 }
 ```
@@ -175,7 +195,42 @@ type Config struct {
 
 **Атомарное сохранение:** write to tmp + rename (crash-safe).
 
-### 5. SecretToken (токены доступа)
+**Background Cleanup Worker:** запускается в `main()` через `cfg.startCleanupWorker(time.Hour)`. Периодически вызывает `cleanupRevokedTokens()` для удаления просроченных и отозванных токенов. Останавливается через `cfg.stopCleanupWorker()` при graceful shutdown.
+
+### 5. AuditLogger (аудит-лог)
+
+**Ответственность:** потокобезопасный ring buffer для логирования всех операций с секретами и токенами.
+
+```go
+type AuditLogger struct {
+    mu      sync.Mutex
+    entries []AuditEntry
+    maxSize int
+}
+
+type AuditEntry struct {
+    Timestamp time.Time  `json:"timestamp"`
+    Action    AuditAction `json:"action"`
+    Target    string     `json:"target"`
+    Actor     string     `json:"actor"`
+    Details   string     `json:"details"`
+}
+
+type AuditAction string
+```
+
+**Действия:** `secret_create`, `secret_get`, `secret_delete`, `secret_update`, `secret_wipe`, `token_create`, `token_revoke`, `token_use`, `token_expire`, `access_granted`, `snapshot_save`, `snapshot_load`
+
+**Размер:** по умолчанию 1000 записей (FIFO ring buffer). При переполнении старые записи перезаписываются.
+
+**API:**
+- `NewAuditLogger(maxSize)` — создание с заданным размером
+- `Log(action, target, actor, details)` — добавление записи (thread-safe)
+- `List()` — возврат всех записей от новых к старым
+
+**Хранение:** только в RAM, не персистентится. Доступ через HTTP `GET /audit`.
+
+### 6. SecretToken (токены доступа)
 
 ```go
 type SecretToken struct {
@@ -362,6 +417,7 @@ type ProjectToken struct {
 10. **Blast radius** — утечка одного токена = утечка одного секрета
 11. **Killswitch** — мгновенное удаление всех секретов
 12. **HTML-эскапирование** — защита от XSS в именах и значениях секретов
+13. **Audit Log** — полное логирование всех операций (CRUD секретов, создание/отзыв/использование токенов, доступ, snapshot save/load)
 
 ### Sealed key security
 
@@ -374,5 +430,6 @@ type ProjectToken struct {
 
 - Нет индекса по проекту (O(n) при поиске токенов проекта)
 - HTTP API без TLS (предполагается использование внутри приватной сети)
-- Аудит-лог только в памяти (не персистентится)
+- Аудит-лог только в памяти (ring buffer, не персистентится, до 1000 записей)
 - Project tokens не поддерживают частичный доступ — всё или ничего
+- Cleanup worker interval фиксирован (1 час), не настраивается через конфиг

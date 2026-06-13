@@ -1,6 +1,6 @@
 # Lab Vault HTTP API
 
-> Версия: 3.0.0 | Базовый URL: `http://127.0.0.1:8301` | Обновлено: 2026-06-12
+> Версия: 4.0.0 | Базовый URL: `http://127.0.0.1:8301` | Обновлено: 2026-06-14
 
 ## Аутентификация
 
@@ -312,7 +312,96 @@ GET /access/:token
 
 **Коды:** 200, 403, 404
 
-Project token — одноразовый, отзывается после первого использования.
+Project token — одноразовый, отзывается بعد первого использования.
+
+---
+
+### Аудит-лог
+
+```
+GET /audit
+X-Vault-Token: <admin-token>
+```
+
+**Авторизация:** Admin.
+
+**Ответ:** массив записей аудита (от новых к старым, до 1000 записей):
+```json
+[
+  {
+    "timestamp": "2026-06-14T10:30:00Z",
+    "action": "token_create",
+    "target": "smtp_password",
+    "actor": "api",
+    "details": "rotated from a1b2c3d4"
+  },
+  {
+    "timestamp": "2026-06-14T10:25:00Z",
+    "action": "secret_get",
+    "target": "smtp_password",
+    "actor": "token:a1b2...",
+    "details": ""
+  }
+]
+```
+
+**Коды:**
+- 200 — успешно (пустой массив `[]` если аудит отключён)
+
+**Действия (action):** `secret_create`, `secret_get`, `secret_delete`, `secret_update`, `secret_wipe`, `token_create`, `token_revoke`, `token_use`, `token_expire`, `access_granted`, `snapshot_save`, `snapshot_load`
+
+---
+
+### Отзыв токена по хешу
+
+```
+DELETE /token/<hash>
+X-Vault-Token: <admin-token>
+```
+
+**Авторизация:** Admin.
+
+Отзывает токен (SecretToken или ProjectToken) по SHA-256 хешу. Токен помечается как revoked и немедленно удаляется из store через `cleanupRevokedTokens`.
+
+**Ответ:**
+```json
+{"status": "revoked"}
+```
+
+**Коды:**
+- 200 — токен отозван
+- 401 — не авторизован
+- 404 — токен не найден
+
+---
+
+### Ротация токена
+
+```
+PUT /token/<hash>
+X-Vault-Token: <admin-token>
+```
+
+**Аторизация:** Admin.
+
+**Атомарная операция:** отзывает старый токен + создаёт новый с тем же таргетом (секрет или проект). Тип токена (SecretToken/ProjectToken) определяется автоматически.
+
+**Ответ:**
+```json
+{
+  "token": "new_random_token_32chars",
+  "expires_at": "2026-07-14T10:30:00Z",
+  "rotated": true
+}
+```
+
+Оригинал нового токена показывается **только один раз** — в этом ответе.
+
+**Коды:**
+- 200 — успешно, новый токен в теле
+- 401 — не авторизован
+- 404 — токен не найден или уже отозван
+- 500 — ошибка генерации токена
 
 ---
 
@@ -350,9 +439,18 @@ hash := hashToken(token)         // SHA-256 → 64 hex-символа
 
 ### Отзыв токенов
 
+- Через API: `DELETE /token/<hash>` — отзыв конкретного токена по хешу
 - Через бот: "🚫 Отозвать все токены" в карточке секрета
 - Через бот: "🚫 Удалить токены" в главном меню (все токены)
-- Автоматически: при удалении секрета, при использовании (one-time)
+- Автоматически: при удалении секрета, при использовании (one-time), background cleanup worker
+
+### Ротация токенов
+
+```
+PUT /token/<hash> → {token: "new_token", rotated: true}
+```
+
+Атомарная операция: старый отзывается, новый создаётся с тем же таргетом. TTL наследуется от `token_ttl_hours`.
 
 ## Примеры использования
 
@@ -377,6 +475,18 @@ curl http://127.0.0.1:8301/export \
 
 # Killswitch
 curl -X DELETE http://127.0.0.1:8301/secrets \
+  -H "X-Vault-Token: <admin-token>"
+
+# Отозвать токен по хешу
+curl -X DELETE http://127.0.0.1:8301/token/<hash> \
+  -H "X-Vault-Token: <admin-token>"
+
+# Ротация токена (отозвать старый + создать новый)
+curl -X PUT http://127.0.0.1:8301/token/<hash> \
+  -H "X-Vault-Token: <admin-token>"
+
+# Аудит-лог
+curl http://127.0.0.1:8301/audit \
   -H "X-Vault-Token: <admin-token>"
 ```
 
