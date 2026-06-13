@@ -24,6 +24,72 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// === AUDIT LOG ===
+
+type AuditAction string
+
+const (
+	ActionSecretSet     AuditAction = "secret.set"
+	ActionSecretGet     AuditAction = "secret.get"
+	ActionSecretDelete  AuditAction = "secret.delete"
+	ActionTokenCreate   AuditAction = "token.create"
+	ActionTokenRevoke   AuditAction = "token.revoke"
+	ActionTokenConsume  AuditAction = "token.consume"
+	ActionProjectCreate AuditAction = "project.create"
+	ActionProjectDelete AuditAction = "project.delete"
+)
+
+type AuditEntry struct {
+	Timestamp time.Time   `json:"timestamp"`
+	Action    AuditAction `json:"action"`
+	Target    string      `json:"target"`
+	Actor     string      `json:"actor"`
+	Details   string      `json:"details,omitempty"`
+}
+
+// AuditLogger — ring buffer для аудит-лога последних N операций.
+type AuditLogger struct {
+	mu      sync.Mutex
+	entries []AuditEntry
+	maxSize int
+}
+
+func NewAuditLogger(maxSize int) *AuditLogger {
+	if maxSize <= 0 {
+		maxSize = 1000
+	}
+	return &AuditLogger{
+		entries: make([]AuditEntry, 0, maxSize),
+		maxSize: maxSize,
+	}
+}
+
+func (a *AuditLogger) Log(action AuditAction, target, actor, details string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	entry := AuditEntry{
+		Timestamp: time.Now(),
+		Action:    action,
+		Target:    target,
+		Actor:     actor,
+		Details:   details,
+	}
+	if len(a.entries) >= a.maxSize {
+		// Shift: remove oldest
+		a.entries = append(a.entries[1:], entry)
+	} else {
+		a.entries = append(a.entries, entry)
+	}
+}
+
+func (a *AuditLogger) List() []AuditEntry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	result := make([]AuditEntry, len(a.entries))
+	copy(result, a.entries)
+	return result
+}
+
 // === MODELS ===
 
 type Secret struct {
@@ -69,31 +135,119 @@ func hashToken(token string) string {
 type Store struct {
 	mu      sync.RWMutex
 	secrets map[string]*Secret
+	sealed  bool
+	sealedKey []byte // ChaCha20-Poly1305 key (32 bytes), generated at init if sealed mode enabled
+	audit   *AuditLogger
 }
 
-func NewStore() *Store {
-	return &Store{
+// NewStore создаёт Store. Если password не пустой — включается sealed mode.
+// audit может быть nil — тогда логирование не ведётся.
+func NewStore(password string, audit ...*AuditLogger) *Store {
+	s := &Store{
 		secrets: make(map[string]*Secret),
 	}
+	if len(audit) > 0 {
+		s.audit = audit[0]
+	}
+	if password != "" {
+		s.sealed = true
+		s.sealedKey = make([]byte, 32)
+		if _, err := rand.Read(s.sealedKey); err != nil {
+			// fallback: derive from password (less secure but works without crypto/rand)
+			s.sealedKey = deriveKey(password, []byte("lab-vault-sealed-salt"))
+		}
+	}
+	return s
+}
+
+// sealedEncrypt шифрует plaintext через ChaCha20-Poly1305 с sealedKey.
+// Формат: [nonce(12)][ciphertext+tag].
+func (s *Store) sealedEncrypt(plaintext string) (string, error) {
+	if !s.sealed {
+		return plaintext, nil
+	}
+	aead, err := chacha20poly1305.New(s.sealedKey)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, snapshotNonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	ciphertext := aead.Seal(nil, nonce, []byte(plaintext), nil)
+	result := make([]byte, snapshotNonceLen+len(ciphertext))
+	copy(result, nonce)
+	copy(result[snapshotNonceLen:], ciphertext)
+	return hex.EncodeToString(result), nil
+}
+
+// sealedDecrypt расшифровывает ciphertext через ChaCha20-Poly1305 с sealedKey.
+func (s *Store) sealedDecrypt(ciphertext string) (string, error) {
+	if !s.sealed {
+		return ciphertext, nil
+	}
+	data, err := hex.DecodeString(ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("sealed decode: %w", err)
+	}
+	if len(data) < snapshotNonceLen {
+		return "", fmt.Errorf("sealed data too short")
+	}
+	aead, err := chacha20poly1305.New(s.sealedKey)
+	if err != nil {
+		return "", err
+	}
+	nonce := data[:snapshotNonceLen]
+	ct := data[snapshotNonceLen:]
+	plaintext, err := aead.Open(nil, nonce, ct, nil)
+	if err != nil {
+		return "", fmt.Errorf("sealed decrypt: %w", err)
+	}
+	return string(plaintext), nil
 }
 
 func (s *Store) Set(name, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	encrypted, err := s.sealedEncrypt(value)
+	if err != nil {
+		// If seal fails, store plaintext — better than losing data
+		encrypted = value
+	}
 	if existing, ok := s.secrets[name]; ok {
-		existing.Value = value
+		existing.Value = encrypted
 		existing.UpdatedAt = now
 	} else {
-		s.secrets[name] = &Secret{Name: name, Value: value, UpdatedAt: now}
+		s.secrets[name] = &Secret{Name: name, Value: encrypted, UpdatedAt: now}
+	}
+	if s.audit != nil {
+		s.audit.Log(ActionSecretSet, name, "store", "")
 	}
 }
 
-func (s *Store) Get(name string) (*Secret, bool) {
+func (s *Store) Get(name string) (Secret, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sec, ok := s.secrets[name]
-	return sec, ok
+	if !ok {
+		return Secret{}, false
+	}
+	value, err := s.sealedDecrypt(sec.Value)
+	if err != nil {
+		// If decryption fails, return raw value (fallback for plaintext migration)
+		value = sec.Value
+	}
+	// Return a copy to prevent mutation of internal state
+	result := Secret{
+		Name:      sec.Name,
+		Value:     value,
+		UpdatedAt: sec.UpdatedAt,
+	}
+	if s.audit != nil {
+		s.audit.Log(ActionSecretGet, name, "store", "")
+	}
+	return result, true
 }
 
 func (s *Store) Delete(name string) bool {
@@ -101,6 +255,9 @@ func (s *Store) Delete(name string) bool {
 	defer s.mu.Unlock()
 	if _, ok := s.secrets[name]; ok {
 		delete(s.secrets, name)
+		if s.audit != nil {
+			s.audit.Log(ActionSecretDelete, name, "store", "")
+		}
 		return true
 	}
 	return false
@@ -112,12 +269,20 @@ func (s *Store) DeleteAll() {
 	s.secrets = make(map[string]*Secret)
 }
 
-func (s *Store) List() []*Secret {
+func (s *Store) List() []Secret {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]*Secret, 0, len(s.secrets))
+	result := make([]Secret, 0, len(s.secrets))
 	for _, sec := range s.secrets {
-		result = append(result, sec)
+		value, err := s.sealedDecrypt(sec.Value)
+		if err != nil {
+			value = sec.Value
+		}
+		result = append(result, Secret{
+			Name:      sec.Name,
+			Value:     value,
+			UpdatedAt: sec.UpdatedAt,
+		})
 	}
 	return result
 }
@@ -144,6 +309,8 @@ type Config struct {
 	UseTLS         bool                       `yaml:"use_tls"`
 	TLSCertPath    string                     `yaml:"tls_cert_path"`
 	TLSKeyPath     string                     `yaml:"tls_key_path"`
+	AuditLog       *AuditLogger              `yaml:"-"`
+	cleanupStop    chan struct{}             `yaml:"-"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -154,6 +321,8 @@ func loadConfig(path string) (*Config, error) {
 		Projects:      make(map[string]*Project),
 		ProjectTokens: make(map[string]*ProjectToken),
 		TokenTTLHours: 720,
+		AuditLog:      NewAuditLogger(1000),
+		cleanupStop:   make(chan struct{}),
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -180,7 +349,38 @@ func loadConfig(path string) (*Config, error) {
 	if envBot := os.Getenv("VAULT_BOT_TOKEN"); envBot != "" {
 		cfg.TGBotToken = envBot
 	}
+	// Purge dead tokens on every startup
+	cfg.mu.Lock()
+	cfg.cleanupRevokedTokens()
+	cfg.mu.Unlock()
 	return cfg, nil
+}
+
+// startCleanupWorker запускает background goroutine для периодической очистки
+// expired/revoked токенов. Останавливается по сигналу из cleanupStop.
+func (c *Config) startCleanupWorker(interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				c.mu.Lock()
+				c.cleanupRevokedTokens()
+				c.mu.Unlock()
+			case <-c.cleanupStop:
+				return
+			}
+		}
+	}()
+}
+
+// stopCleanupWorker останавливает background cleanup goroutine.
+func (c *Config) stopCleanupWorker() {
+	close(c.cleanupStop)
 }
 
 func (c *Config) save(path string) error {
@@ -196,11 +396,10 @@ func (c *Config) save(path string) error {
 }
 
 // cleanupRevokedTokens удаляет отозванные и просроченные токены из конфига.
-// Вызывать явно перед сохранением — НЕ внутри save(), чтобы не ломать
-// промежуточные состояния (например, revoke с последующей проверкой).
+// ВЫЗЫВАТЬ ПОД config.mu.Lock() — метод не берёт мьютекс сам.
+// Не встраиваем в save(), чтобы не ломать промежуточные состояния
+// (например, revoke с последующей проверкой).
 func (c *Config) cleanupRevokedTokens() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	now := time.Now()
 	for hash, st := range c.SecretTokens {
 		if st.Revoked || (!st.ExpiresAt.IsZero() && now.After(st.ExpiresAt)) {
@@ -211,6 +410,20 @@ func (c *Config) cleanupRevokedTokens() {
 		if pt.Revoked || (!pt.ExpiresAt.IsZero() && now.After(pt.ExpiresAt)) {
 			delete(c.ProjectTokens, hash)
 		}
+	}
+}
+
+// removeSecretFromProjects удаляет секрет из SecretIDs всех проектов.
+// Должен вызываться под config.mu.Lock().
+func (c *Config) removeSecretFromProjects(name string) {
+	for _, proj := range c.Projects {
+		cleaned := make([]string, 0, len(proj.SecretIDs))
+		for _, sid := range proj.SecretIDs {
+			if sid != name {
+				cleaned = append(cleaned, sid)
+			}
+		}
+		proj.SecretIDs = cleaned
 	}
 }
 
@@ -364,6 +577,8 @@ func (s *Server) ListenAndServe() error {
 	mux.HandleFunc("/access/", s.handleAccess)
 	mux.HandleFunc("/projects", s.handleProjects)
 	mux.HandleFunc("/project/", s.handleProjectByID)
+	mux.HandleFunc("/audit", s.handleAudit)
+	mux.HandleFunc("/token/", s.handleToken)
 	mux.HandleFunc("/project-tokens/", s.handleProjectTokens)
 
 	handler := s.recoveryMiddleware(s.loggingMiddleware(mux))
@@ -473,18 +688,22 @@ func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request, name
 		return
 	}
 
-	// Revoke and delete all tokens for this secret
+	// Revoke and delete all tokens for this secret, clean project references
 	s.config.mu.Lock()
 	for hash, st := range s.config.SecretTokens {
 		if st.SecretName == name {
 			delete(s.config.SecretTokens, hash)
 		}
 	}
+	s.config.removeSecretFromProjects(name)
 	if err := s.config.save(s.configPath); err != nil {
 		log.Printf("[api] config save error: %v", err)
 	}
 	s.config.mu.Unlock()
 
+	if s.config.AuditLog != nil {
+		s.config.AuditLog.Log(ActionSecretDelete, name, "api", "DELETE /secret/"+name)
+	}
 	jsonResponse(w, map[string]string{"status": "deleted", "name": name})
 }
 
@@ -511,6 +730,9 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.store.Set(req.Name, req.Value)
+		if s.config.AuditLog != nil {
+			s.config.AuditLog.Log(ActionSecretSet, req.Name, "api", "POST /secrets")
+		}
 		jsonResponse(w, map[string]string{"status": "created", "name": req.Name})
 
 	case http.MethodDelete:
@@ -574,6 +796,8 @@ func (s *Server) handleAccess(w http.ResponseWriter, r *http.Request) {
 	s.config.mu.Lock()
 	if st, ok := s.config.SecretTokens[tokenHash]; ok && !st.Revoked {
 		if !st.ExpiresAt.IsZero() && time.Now().After(st.ExpiresAt) {
+			delete(s.config.SecretTokens, tokenHash)
+			s.config.save(s.configPath)
 			s.config.mu.Unlock()
 			http.Error(w, "token expired", http.StatusForbidden)
 			return
@@ -591,6 +815,9 @@ func (s *Server) handleAccess(w http.ResponseWriter, r *http.Request) {
 		}
 		s.config.mu.Unlock()
 
+		if s.config.AuditLog != nil {
+			s.config.AuditLog.Log(ActionTokenConsume, secretName, "api", "one-time")
+		}
 		secret, ok := s.store.Get(secretName)
 		if !ok {
 			http.Error(w, "secret not found", http.StatusNotFound)
@@ -609,6 +836,8 @@ func (s *Server) handleAccess(w http.ResponseWriter, r *http.Request) {
 	s.config.mu.Lock()
 	if pt, ok := s.config.ProjectTokens[tokenHash]; ok && !pt.Revoked {
 		if !pt.ExpiresAt.IsZero() && time.Now().After(pt.ExpiresAt) {
+			delete(s.config.ProjectTokens, tokenHash)
+			s.config.save(s.configPath)
 			s.config.mu.Unlock()
 			http.Error(w, "token expired", http.StatusForbidden)
 			return
@@ -741,7 +970,7 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 		}
 		type projectView struct {
 			*Project
-			Secrets []*Secret `json:"secrets"`
+			Secrets []Secret `json:"secrets"`
 		}
 		view := projectView{Project: project}
 		for _, sid := range project.SecretIDs {
@@ -848,6 +1077,125 @@ func (s *Server) handleProjectTokens(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
+	tokenHash := strings.TrimPrefix(r.URL.Path, "/token/")
+	if tokenHash == "" {
+		http.Error(w, "token hash required", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodDelete:
+		// Revoke token by hash
+		if !s.isAdmin(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.config.mu.Lock()
+		if st, ok := s.config.SecretTokens[tokenHash]; ok {
+			st.Revoked = true
+			s.config.cleanupRevokedTokens()
+			if s.config.AuditLog != nil {
+				s.config.AuditLog.Log(ActionTokenRevoke, st.SecretName, "api", "hash="+tokenHash[:8])
+			}
+			s.config.save(s.configPath)
+			s.config.mu.Unlock()
+			jsonResponse(w, map[string]string{"status": "revoked"})
+			return
+		}
+		if pt, ok := s.config.ProjectTokens[tokenHash]; ok {
+			pt.Revoked = true
+			s.config.cleanupRevokedTokens()
+			if s.config.AuditLog != nil {
+				s.config.AuditLog.Log(ActionTokenRevoke, pt.ProjectID, "api", "hash="+tokenHash[:8])
+			}
+			s.config.save(s.configPath)
+			s.config.mu.Unlock()
+			jsonResponse(w, map[string]string{"status": "revoked"})
+			return
+		}
+		s.config.mu.Unlock()
+		http.Error(w, "token not found", http.StatusNotFound)
+
+	case http.MethodPut:
+		// Rotate: revoke old + create new for same target
+		if !s.isAdmin(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.config.mu.Lock()
+		var targetName, targetType string
+		if st, ok := s.config.SecretTokens[tokenHash]; ok && !st.Revoked {
+			targetName = st.SecretName
+			targetType = "secret"
+			st.Revoked = true
+		} else if pt, ok := s.config.ProjectTokens[tokenHash]; ok && !pt.Revoked {
+			targetName = pt.ProjectID
+			targetType = "project"
+			pt.Revoked = true
+		}
+		if targetName == "" {
+			s.config.mu.Unlock()
+			http.Error(w, "token not found or already revoked", http.StatusNotFound)
+			return
+		}
+		s.config.cleanupRevokedTokens()
+
+		// Create new token
+		newToken, err := randomToken(32)
+		if err != nil {
+			s.config.mu.Unlock()
+			http.Error(w, "token generation failed", http.StatusInternalServerError)
+			return
+		}
+		now := time.Now()
+		var expires time.Time
+		if s.config.TokenTTLHours > 0 {
+			expires = now.Add(time.Duration(s.config.TokenTTLHours) * time.Hour)
+		}
+		newHash := hashToken(newToken)
+
+		if targetType == "secret" {
+			s.config.SecretTokens[newHash] = &SecretToken{
+				SecretName: targetName, Token: newHash,
+				CreatedAt: now, ExpiresAt: expires,
+			}
+		} else {
+			s.config.ProjectTokens[newHash] = &ProjectToken{
+				ProjectID: targetName, Token: newHash,
+				CreatedAt: now, ExpiresAt: expires,
+			}
+		}
+		if s.config.AuditLog != nil {
+			s.config.AuditLog.Log(ActionTokenCreate, targetName, "api", "rotated from "+tokenHash[:8])
+		}
+		s.config.save(s.configPath)
+		s.config.mu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+		jsonResponse(w, map[string]interface{}{
+			"token":      newToken,
+			"expires_at": expires,
+			"rotated":    true,
+		})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdmin(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.config.AuditLog == nil {
+		jsonResponse(w, []AuditEntry{})
+		return
+	}
+	jsonResponse(w, s.config.AuditLog.List())
 }
 
 // === BOT INTERFACE ===
@@ -1259,6 +1607,9 @@ func (b *Bot) createSecretToken(chatID int64, name string) {
 	if err := b.config.save(b.configPath); err != nil {
 		log.Printf("[bot] config save error: %v", err)
 	}
+	if b.config.AuditLog != nil {
+		b.config.AuditLog.Log(ActionTokenCreate, name, "bot", "")
+	}
 	b.config.mu.Unlock()
 
 	ttlStr := "∞"
@@ -1288,6 +1639,10 @@ func (b *Bot) revokeAllTokensForSecret(chatID int64, name string) {
 			revoked++
 		}
 	}
+	b.config.cleanupRevokedTokens()
+	if b.config.AuditLog != nil {
+		b.config.AuditLog.Log(ActionTokenRevoke, name, "bot", fmt.Sprintf("revoked=%d", revoked))
+	}
 	if err := b.config.save(b.configPath); err != nil {
 		log.Printf("[bot] config save error: %v", err)
 	}
@@ -1304,13 +1659,14 @@ func (b *Bot) revokeAllTokensForSecret(chatID int64, name string) {
 
 func (b *Bot) deleteSecret(chatID int64, name string) {
 	if b.store.Delete(name) {
-		// Also revoke and delete all tokens for this secret
+		// Also revoke and delete all tokens for this secret, clean project references
 		b.config.mu.Lock()
 		for hash, st := range b.config.SecretTokens {
 			if st.SecretName == name {
 				delete(b.config.SecretTokens, hash)
 			}
 		}
+		b.config.removeSecretFromProjects(name)
 		if err := b.config.save(b.configPath); err != nil {
 			log.Printf("[bot] config save error: %v", err)
 		}
@@ -1775,7 +2131,8 @@ func main() {
 		log.Fatal("Admin token not set (admin_token in config or VAULT_ADMIN_TOKEN env)")
 	}
 
-	store := NewStore()
+	store := NewStore(os.Getenv("VAULT_PASSWORD"), cfg.AuditLog)
+	cfg.startCleanupWorker(time.Hour)
 
 	// Load secrets from encrypted snapshot if exists
 	if _, err := os.Stat(cfg.SnapshotPath); err == nil {
@@ -1788,7 +2145,7 @@ func main() {
 					var secrets map[string]*Secret
 					if json.Unmarshal(decrypted, &secrets) == nil {
 						for name, sec := range secrets {
-							store.secrets[name] = sec
+							store.Set(name, sec.Value)
 						}
 					}
 				} else {
@@ -1832,10 +2189,20 @@ func main() {
 		<-sigCh
 		log.Print("[main] terminated — shutting down...")
 		cancel()
-		server.Shutdown(context.Background())
+		cfg.stopCleanupWorker()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[main] shutdown error: %v", err)
+		}
 	}()
 
-	go server.ListenAndServe()
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[main] server error: %v", err)
+			cancel()
+		}
+	}()
 
 	// Snapshot on exit (encrypted)
 	defer func() {
@@ -1844,7 +2211,9 @@ func main() {
 			log.Print("[main] VAULT_PASSWORD not set, skipping snapshot save")
 			return
 		}
+		cfg.mu.Lock()
 		cfg.cleanupRevokedTokens()
+		cfg.mu.Unlock()
 		if err := cfg.save(*configPath); err != nil {
 			log.Printf("[main] config save error: %v", err)
 		}
