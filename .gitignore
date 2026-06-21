@@ -43,3 +43,6 @@ snapshot.enc
 .tmp
 *.tmp
 *~
+
+# Node
+node_modules/
