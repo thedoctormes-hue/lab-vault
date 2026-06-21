@@ -18,9 +18,9 @@ waiting_name → waiting_value → done (auto token generation)
 Состояние хранится в `map[int64]*session` (ключ — ChatID):
 ```go
 type session struct {
-    state  string
-    name   string
-    value  string
+ state string
+ name string
+ value string
 }
 ```
 

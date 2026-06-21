@@ -7,7 +7,6 @@
 | **Статус** | 🚀 production |
 | **Путь** | `/root/LabDoctorM/projects/lab-vault` |
 | **Тип** | service |
-| **Владелец** | ant |
 | **Приоритет** | high |
 | **Стек** | Go 1.22, tgbotapi v5, yaml.v3, ChaCha20-Poly1305 |
 

@@ -1,7 +1,6 @@
 # Архитектура Lab Vault
 
-> Версия: 4.0.0 | Дата: 2026-06-14 | Владелец: ant | last_reviewed: 2026-06-14 | last_code_change: 2026-06-14
-
+> Версия: 4.0.0 | Дата: 2026-06-14 | 
 ## Обзор
 
 Lab Vault — **in-memory секретный менеджер** с Telegram-ботом интерфейсом. Главный принцип: секреты живут только в RAM, на диске — минимально необходимое (зашифрованный снапшот).
@@ -10,36 +9,36 @@ Lab Vault — **in-memory секретный менеджер** с Telegram-бо
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         main.go                              │
-│                                                              │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │   Bot (TG)   │───▶│    Store     │◀───│Server (HTTP) │   │
-│  │   FSM multi  │    │  sync.RWMutex│    │  net/http    │   │
-│  │   HTML render│    │  sealedKey   │    │ 13 endpoints │   │
-│  │              │    │  audit       │    │              │   │
-│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘   │
-│         │                   │                   │            │
-│  ┌──────▼───────┐    ┌──────▼───────┐    ┌──────▼───────┐   │
-│  │   Config     │    │  SecretToken │    │  snapshot.enc │   │
-│  │   YAML + mu  │    │  Project     │    │  JSON/blob   │   │
-│  │  +projects   │    │  ProjectToken│    │              │   │
-│  │  +AuditLog   │    └──────────────┘    └──────────────┘   │
-│  │  +cleanupStop│                                            │
-│  └──────────────┘    ┌──────────────┐                       │
-│                      │ AuditLogger  │  ring buffer (1000)   │
-│                      │  + mutex     │                       │
-│                      └──────────────┘                       │
-│  ┌──────────────┐                                            │
-│  │ CleanupWorker│  background goroutine (1h interval)       │
-│  └──────────────┘                                            │
+│ main.go │
+│ │
+│ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ │
+│ │ Bot (TG) │───▶│ Store │◀───│Server (HTTP) │ │
+│ │ FSM multi │ │ sync.RWMutex│ │ net/http │ │
+│ │ HTML render│ │ sealedKey │ │ 13 endpoints │ │
+│ │ │ │ audit │ │ │ │
+│ └──────┬───────┘ └──────┬───────┘ └──────┬───────┘ │
+│ │ │ │ │
+│ ┌──────▼───────┐ ┌──────▼───────┐ ┌──────▼───────┐ │
+│ │ Config │ │ SecretToken │ │ snapshot.enc │ │
+│ │ YAML + mu │ │ Project │ │ JSON/blob │ │
+│ │ +projects │ │ ProjectToken│ │ │ │
+│ │ +AuditLog │ └──────────────┘ └──────────────┘ │
+│ │ +cleanupStop│ │
+│ └──────────────┘ ┌──────────────┐ │
+│ │ AuditLogger │ ring buffer (1000) │
+│ │ + mutex │ │
+│ └──────────────┘ │
+│ ┌──────────────┐ │
+│ │ CleanupWorker│ background goroutine (1h interval) │
+│ └──────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 
 Внешние клиенты:
-  ЗавЛаб ─────────▶ TG Bot ──────▶ POST /secrets ──────▶ Store
-                                        POST /projects ──▶ Config
-  Лаборант ───────▶ lab-vault-env ─▶ GET /access/:token ─▶ Store
-                      (env/           (single token → 1 secret)
-                       .env)          (project token → N secrets)
+ ЗавЛаб ─────────▶ TG Bot ──────▶ POST /secrets ──────▶ Store
+ POST /projects ──▶ Config
+ Лаборант ───────▶ lab-vault-env ─▶ GET /access/:token ─▶ Store
+ (env/ (single token → 1 secret)
+ .env) (project token → N secrets)
 ```
 
 ## Слои и ответственности
@@ -52,10 +51,10 @@ Lab Vault — **in-memory секретный менеджер** с Telegram-бо
 
 ```go
 type Store struct {
-    mu        sync.RWMutex
-    secrets   map[string]*Secret
-    sealedKey []byte // nil = legacy, non-nil = sealed mode
-    audit     *AuditLogger // nil = audit disabled
+ mu sync.RWMutex
+ secrets map[string]*Secret
+ sealedKey []byte // nil = legacy, non-nil = sealed mode
+ audit *AuditLogger // nil = audit disabled
 }
 ```
 
@@ -127,8 +126,8 @@ type Store struct {
 **Интерфейс botAPI:**
 ```go
 type botAPI interface {
-    Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
-    Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
+ Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
+ Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
 }
 ```
 
@@ -173,21 +172,21 @@ type botAPI interface {
 
 ```go
 type Config struct {
-    SnapshotPath   string                    `yaml:"snapshot_path"`
-    ListenAddr     string                    `yaml:"listen_addr"`
-    TGBotToken     string                    `yaml:"tg_bot_token"`
-    TGAdminID      int64                     `yaml:"tg_admin_id"`
-    AdminToken     string                    `yaml:"admin_token"`
-    TokenTTLHours  int                       `yaml:"token_ttl_hours"`
-    SecretTokens   map[string]*SecretToken   `yaml:"secret_tokens"`
-    Projects       map[string]*Project       `yaml:"projects"`
-    ProjectTokens  map[string]*ProjectToken  `yaml:"project_tokens"`
-    UseTLS         bool                      `yaml:"use_tls"`
-    TLSCertPath    string                    `yaml:"tls_cert_path"`
-    TLSKeyPath     string                    `yaml:"tls_key_path"`
-    AuditLog       *AuditLogger              `yaml:"-"`
-    cleanupStop    chan struct{}             `yaml:"-"`
-    mu             sync.RWMutex              `yaml:"-"`
+ SnapshotPath string `yaml:"snapshot_path"`
+ ListenAddr string `yaml:"listen_addr"`
+ TGBotToken string `yaml:"tg_bot_token"`
+ TGAdminID int64 `yaml:"tg_admin_id"`
+ AdminToken string `yaml:"admin_token"`
+ TokenTTLHours int `yaml:"token_ttl_hours"`
+ SecretTokens map[string]*SecretToken `yaml:"secret_tokens"`
+ Projects map[string]*Project `yaml:"projects"`
+ ProjectTokens map[string]*ProjectToken `yaml:"project_tokens"`
+ UseTLS bool `yaml:"use_tls"`
+ TLSCertPath string `yaml:"tls_cert_path"`
+ TLSKeyPath string `yaml:"tls_key_path"`
+ AuditLog *AuditLogger `yaml:"-"`
+ cleanupStop chan struct{} `yaml:"-"`
+ mu sync.RWMutex `yaml:"-"`
 }
 ```
 
@@ -203,17 +202,17 @@ type Config struct {
 
 ```go
 type AuditLogger struct {
-    mu      sync.Mutex
-    entries []AuditEntry
-    maxSize int
+ mu sync.Mutex
+ entries []AuditEntry
+ maxSize int
 }
 
 type AuditEntry struct {
-    Timestamp time.Time  `json:"timestamp"`
-    Action    AuditAction `json:"action"`
-    Target    string     `json:"target"`
-    Actor     string     `json:"actor"`
-    Details   string     `json:"details"`
+ Timestamp time.Time `json:"timestamp"`
+ Action AuditAction `json:"action"`
+ Target string `json:"target"`
+ Actor string `json:"actor"`
+ Details string `json:"details"`
 }
 
 type AuditAction string
@@ -234,11 +233,11 @@ type AuditAction string
 
 ```go
 type SecretToken struct {
-    SecretName string    `yaml:"secret_name"`
-    Token      string    `yaml:"token"`      // SHA-256 hex-хеш токена
-    CreatedAt  time.Time `yaml:"created_at"`
-    ExpiresAt  time.Time `yaml:"expires_at"` // zero = never
-    Revoked    bool      `yaml:"revoked"`
+ SecretName string `yaml:"secret_name"`
+ Token string `yaml:"token"` // SHA-256 hex-хеш токена
+ CreatedAt time.Time `yaml:"created_at"`
+ ExpiresAt time.Time `yaml:"expires_at"` // zero = never
+ Revoked bool `yaml:"revoked"`
 }
 ```
 
@@ -251,17 +250,17 @@ type SecretToken struct {
 
 ```
 Project ──1:N──▶ ProjectToken
-  │                   │
-  │ ID (string, PK)   │ ProjectID (string, FK)
-  │ Name (string)     │ Token (SHA-256 hex)
-  │ SecretIDs []      │ CreatedAt, ExpiresAt, Revoked
-  │ CreatedAt         │
-  │                   │
-  └── N:M ──────── Secret ──1:N──▶ SecretToken
-                  │
-                  ├── Name (string, PK)
-                  ├── Value (string, encrypted at rest)
-                  └── UpdatedAt (time.Time)
+ │ │
+ │ ID (string, PK) │ ProjectID (string, FK)
+ │ Name (string) │ Token (SHA-256 hex)
+ │ SecretIDs [] │ CreatedAt, ExpiresAt, Revoked
+ │ CreatedAt │
+ │ │
+ └── N:M ──────── Secret ──1:N──▶ SecretToken
+ │
+ ├── Name (string, PK)
+ ├── Value (string, encrypted at rest)
+ └── UpdatedAt (time.Time)
 ```
 
 **Project** группирует секреты по `SecretIDs` (N:M — один секрет может быть в нескольких проектах).
@@ -306,8 +305,8 @@ Project ──1:N──▶ ProjectToken
 ### Криптография
 
 ```go
-func deriveKey(password string, salt []byte) []byte  // Argon2id → 32-byte key
-func encryptSnapshot(data, password) []byte           // JSON → ChaCha20-Poly1305 → file
+func deriveKey(password string, salt []byte) []byte // Argon2id → 32-byte key
+func encryptSnapshot(data, password) []byte // JSON → ChaCha20-Poly1305 → file
 func decryptSnapshot(data, password) ([]byte, error) // file → ChaCha20-Poly1305 → JSON
 ```
 
@@ -374,10 +373,10 @@ lab-vault-cli export
 
 ```go
 type Project struct {
-    ID        string    `json:"id" yaml:"-"`
-    Name      string    `json:"name"`
-    SecretIDs []string  `json:"secret_ids" yaml:"secret_ids"`
-    CreatedAt time.Time `json:"created_at" yaml:"created_at"`
+ ID string `json:"id" yaml:"-"`
+ Name string `json:"name"`
+ SecretIDs []string `json:"secret_ids" yaml:"secret_ids"`
+ CreatedAt time.Time `json:"created_at" yaml:"created_at"`
 }
 ```
 
@@ -389,11 +388,11 @@ type Project struct {
 
 ```go
 type ProjectToken struct {
-    ProjectID string    `json:"project_id" yaml:"project_id"`
-    Token     string    `json:"token" yaml:"token"` // SHA-256 hash
-    CreatedAt time.Time `json:"created_at" yaml:"created_at"`
-    ExpiresAt time.Time `json:"expires_at" yaml:"expires_at"` // zero = never
-    Revoked   bool      `json:"revoked" yaml:"revoked"`
+ ProjectID string `json:"project_id" yaml:"project_id"`
+ Token string `json:"token" yaml:"token"` // SHA-256 hash
+ CreatedAt time.Time `json:"created_at" yaml:"created_at"`
+ ExpiresAt time.Time `json:"expires_at" yaml:"expires_at"` // zero = never
+ Revoked bool `json:"revoked" yaml:"revoked"`
 }
 ```
 

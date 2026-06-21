@@ -18,7 +18,7 @@ Go 1.22, ChaCha20-Poly1305 (x/crypto), Argon2id KDF, Telegram Bot API v5, YAML c
 ### Архитектурные слои
 ```
 ЗавЛаб → TG Bot → POST /secrets → Store (RAM) → snapshot.enc (ChaCha20-Poly1305)
-                                   ↓
+ ↓
 Лаборант → lab-vault-env → GET /secrets/:project → eval $(export ...)
 ```
 

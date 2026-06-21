@@ -36,10 +36,10 @@ ant (по запросу ЗавЛаба)
 
 ```go
 type Project struct {
-    ID        string    // уникальный slug-идентификатор
-    Name      string    // человекочитаемое имя
-    SecretIDs []string  // список имён секретов (N:M)
-    CreatedAt time.Time
+ ID string // уникальный slug-идентификатор
+ Name string // человекочитаемое имя
+ SecretIDs []string // список имён секретов (N:M)
+ CreatedAt time.Time
 }
 ```
 
@@ -53,11 +53,11 @@ type Project struct {
 
 ```go
 type ProjectToken struct {
-    ProjectID string    // ID проекта
-    Token     string    // SHA-256 хеш
-    CreatedAt time.Time
-    ExpiresAt time.Time // zero = бессрочно
-    Revoked   bool
+ ProjectID string // ID проекта
+ Token string // SHA-256 хеш
+ CreatedAt time.Time
+ ExpiresAt time.Time // zero = бессрочно
+ Revoked bool
 }
 ```
 

@@ -19,11 +19,11 @@ Accepted
 
 ```go
 type SecretToken struct {
-    SecretName string    `yaml:"secret_name"`
-    Token      string    `yaml:"token"`
-    CreatedAt  time.Time `yaml:"created_at"`
-    ExpiresAt  time.Time `yaml:"expires_at"`
-    Revoked    bool      `yaml:"revoked"`
+ SecretName string `yaml:"secret_name"`
+ Token string `yaml:"token"`
+ CreatedAt time.Time `yaml:"created_at"`
+ ExpiresAt time.Time `yaml:"expires_at"`
+ Revoked bool `yaml:"revoked"`
 }
 ```
 

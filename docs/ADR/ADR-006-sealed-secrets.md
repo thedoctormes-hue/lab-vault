@@ -18,7 +18,7 @@ Accepted
 
 ```
 VAULT_PASSWORD установлен → Sealed mode (шифрование ChaCha20-Poly1305)
-VAULT_PASSWORD не задан  → Legacy mode (plaintext, как было)
+VAULT_PASSWORD не задан → Legacy mode (plaintext, как было)
 ```
 
 **Sealed mode:**

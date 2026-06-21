@@ -1,8 +1,8 @@
 ---
 name: Lab Vault
+owner: DoctorM&Ai
 type: service
 status: production
-owner: ant
 priority: high
 stack: [Go 1.22, tgbotapi v5, yaml.v3, ChaCha20-Poly1305]
 version: "1.0.0"
@@ -14,9 +14,6 @@ updated: "2026-06-10"
 # Lab Vault
 
 Секретный менеджер для AI-агентов. Секреты хранятся в RAM, на диске — только зашифрованный снапшот.
-
-## Владелец
-Муравей (ant)
 
 ## Назначение
 Безопасная передача секретов (API keys, пароли, токены) AI-агентам Лаборатории без компрометации.

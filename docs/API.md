@@ -26,9 +26,9 @@ GET /health
 **Ответ:**
 ```json
 {
-  "status": "ok",
-  "secrets": 5,
-  "uptime": "2h15m30s"
+ "status": "ok",
+ "secrets": 5,
+ "uptime": "2h15m30s"
 }
 ```
 
@@ -48,11 +48,11 @@ GET /secrets
 **Ответ:**
 ```json
 [
-  {
-    "name": "smtp_password",
-    "value": "secret123",
-    "updated_at": "2026-06-10T12:30:00Z"
-  }
+ {
+ "name": "smtp_password",
+ "value": "secret123",
+ "updated_at": "2026-06-10T12:30:00Z"
+ }
 ]
 ```
 
@@ -73,16 +73,16 @@ X-Vault-Token: <admin-token>
 **Тело запроса:**
 ```json
 {
-  "name": "smtp_password",
-  "value": "secret123"
+ "name": "smtp_password",
+ "value": "secret123"
 }
 ```
 
 **Ответ:**
 ```json
 {
-  "status": "created",
-  "name": "smtp_password"
+ "status": "created",
+ "name": "smtp_password"
 }
 ```
 
@@ -104,7 +104,7 @@ X-Vault-Token: <admin-token>
 **Ответ:**
 ```json
 {
-  "status": "deleted"
+ "status": "deleted"
 }
 ```
 
@@ -132,8 +132,8 @@ Content-Disposition: attachment; filename="vault-export.json"
 **Ответ:**
 ```json
 {
-  "smtp_password": "secret123",
-  "api_key": "abc123"
+ "smtp_password": "secret123",
+ "api_key": "abc123"
 }
 ```
 
@@ -154,9 +154,9 @@ GET /access/:token
 **Ответ:**
 ```json
 {
-  "name": "smtp_password",
-  "value": "secret123",
-  "updated_at": "2026-06-10T12:30:00Z"
+ "name": "smtp_password",
+ "value": "secret123",
+ "updated_at": "2026-06-10T12:30:00Z"
 }
 ```
 
@@ -186,12 +186,12 @@ X-Vault-Token: <admin-token>
 **Ответ:**
 ```json
 [
-  {
-    "id": "myapp",
-    "name": "My App",
-    "secret_ids": ["db_pass", "api_key"],
-    "created_at": "2026-06-12T10:00:00Z"
-  }
+ {
+ "id": "myapp",
+ "name": "My App",
+ "secret_ids": ["db_pass", "api_key"],
+ "created_at": "2026-06-12T10:00:00Z"
+ }
 ]
 ```
 
@@ -231,14 +231,14 @@ X-Vault-Token: <admin-token>
 **Ответ:**
 ```json
 {
-  "id": "myapp",
-  "name": "My App",
-  "secret_ids": ["db_pass", "api_key"],
-  "secrets": [
-    {"name": "db_pass", "updated_at": "2026-06-10T12:30:00Z"},
-    {"name": "api_key", "updated_at": "2026-06-11T08:15:00Z"}
-  ],
-  "created_at": "2026-06-12T10:00:00Z"
+ "id": "myapp",
+ "name": "My App",
+ "secret_ids": ["db_pass", "api_key"],
+ "secrets": [
+ {"name": "db_pass", "updated_at": "2026-06-10T12:30:00Z"},
+ {"name": "api_key", "updated_at": "2026-06-11T08:15:00Z"}
+ ],
+ "created_at": "2026-06-12T10:00:00Z"
 }
 ```
 
@@ -280,9 +280,9 @@ X-Vault-Token: <admin-token>
 **Ответ:**
 ```json
 {
-  "token": "abc123...xyz",
-  "project_id": "myapp",
-  "expires_at": "2026-07-12T10:00:00Z"
+ "token": "abc123...xyz",
+ "project_id": "myapp",
+ "expires_at": "2026-07-12T10:00:00Z"
 }
 ```
 
@@ -301,12 +301,12 @@ GET /access/:token
 **Ответ (project token):**
 ```json
 {
-  "project": "My App",
-  "project_id": "myapp",
-  "secrets": {
-    "db_pass": {"name": "db_pass", "value": "secret123", "updated_at": "2026-06-10T12:30:00Z"},
-    "api_key": {"name": "api_key", "value": "key456", "updated_at": "2026-06-11T08:15:00Z"}
-  }
+ "project": "My App",
+ "project_id": "myapp",
+ "secrets": {
+ "db_pass": {"name": "db_pass", "value": "secret123", "updated_at": "2026-06-10T12:30:00Z"},
+ "api_key": {"name": "api_key", "value": "key456", "updated_at": "2026-06-11T08:15:00Z"}
+ }
 }
 ```
 
@@ -328,20 +328,20 @@ X-Vault-Token: <admin-token>
 **Ответ:** массив записей аудита (от новых к старым, до 1000 записей):
 ```json
 [
-  {
-    "timestamp": "2026-06-14T10:30:00Z",
-    "action": "token_create",
-    "target": "smtp_password",
-    "actor": "api",
-    "details": "rotated from a1b2c3d4"
-  },
-  {
-    "timestamp": "2026-06-14T10:25:00Z",
-    "action": "secret_get",
-    "target": "smtp_password",
-    "actor": "token:a1b2...",
-    "details": ""
-  }
+ {
+ "timestamp": "2026-06-14T10:30:00Z",
+ "action": "token_create",
+ "target": "smtp_password",
+ "actor": "api",
+ "details": "rotated from a1b2c3d4"
+ },
+ {
+ "timestamp": "2026-06-14T10:25:00Z",
+ "action": "secret_get",
+ "target": "smtp_password",
+ "actor": "token:a1b2...",
+ "details": ""
+ }
 ]
 ```
 
@@ -389,9 +389,9 @@ X-Vault-Token: <admin-token>
 **Ответ:**
 ```json
 {
-  "token": "new_random_token_32chars",
-  "expires_at": "2026-07-14T10:30:00Z",
-  "rotated": true
+ "token": "new_random_token_32chars",
+ "expires_at": "2026-07-14T10:30:00Z",
+ "rotated": true
 }
 ```
 
@@ -416,19 +416,19 @@ X-Vault-Token: <admin-token>
 
 ```go
 type SecretToken struct {
-    SecretName string    // Имя секрета
-    Token      string    // SHA-256 hex-хеш (64 hex-символа)
-    CreatedAt  time.Time // Дата создания
-    ExpiresAt  time.Time // Дата истечения (zero = бессрочно)
-    Revoked    bool      // Отозван
+ SecretName string // Имя секрета
+ Token string // SHA-256 hex-хеш (64 hex-символа)
+ CreatedAt time.Time // Дата создания
+ ExpiresAt time.Time // Дата истечения (zero = бессрочно)
+ Revoked bool // Отозван
 }
 ```
 
 ### Генерация токена
 
 ```go
-token, _ := randomToken(32)     // crypto/rand, 32 символа
-hash := hashToken(token)         // SHA-256 → 64 hex-символа
+token, _ := randomToken(32) // crypto/rand, 32 символа
+hash := hashToken(token) // SHA-256 → 64 hex-символа
 ```
 
 В config.yaml хранится **хеш** токена, не оригинал. Оригинал показывается только один раз при создании.
@@ -462,32 +462,32 @@ curl http://127.0.0.1:8301/health
 
 # Создать секрет
 curl -X POST http://127.0.0.1:8301/secrets \
-  -H "X-Vault-Token: <admin-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"api_key","value":"secret456"}'
+ -H "X-Vault-Token: <admin-token>" \
+ -H "Content-Type: application/json" \
+ -d '{"name":"api_key","value":"secret456"}'
 
 # Получить по токену
 curl http://127.0.0.1:8301/access/<token>
 
 # Экспорт
 curl http://127.0.0.1:8301/export \
-  -H "X-Vault-Token: <admin-token>"
+ -H "X-Vault-Token: <admin-token>"
 
 # Killswitch
 curl -X DELETE http://127.0.0.1:8301/secrets \
-  -H "X-Vault-Token: <admin-token>"
+ -H "X-Vault-Token: <admin-token>"
 
 # Отозвать токен по хешу
 curl -X DELETE http://127.0.0.1:8301/token/<hash> \
-  -H "X-Vault-Token: <admin-token>"
+ -H "X-Vault-Token: <admin-token>"
 
 # Ротация токена (отозвать старый + создать новый)
 curl -X PUT http://127.0.0.1:8301/token/<hash> \
-  -H "X-Vault-Token: <admin-token>"
+ -H "X-Vault-Token: <admin-token>"
 
 # Аудит-лог
 curl http://127.0.0.1:8301/audit \
-  -H "X-Vault-Token: <admin-token>"
+ -H "X-Vault-Token: <admin-token>"
 ```
 
 ### lab-vault-env
