@@ -46,3 +46,4 @@ snapshot.enc
 
 # Node
 node_modules/
+.secrets-initialized
