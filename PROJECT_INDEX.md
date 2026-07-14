@@ -1,3 +1,12 @@
+---
+description: "Lab Vault — карточка проекта (индекс)"
+type: project-index
+id: proj-lab-vault
+project_type: service
+priority: high
+last_reviewed: 2026-07-14
+status: production
+---
 # Lab Vault
 
 | Поле | Значение |
